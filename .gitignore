@@ -1,0 +1,19 @@
+# Binaries and build artifacts
+*.exe
+*.o
+*.obj
+*.dll
+bin/
+build/
+
+# Logs and outputs
+logs/*
+!logs/.gitkeep
+docs/ketqua/*
+!docs/ketqua/.gitkeep
+
+# IDE and OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
