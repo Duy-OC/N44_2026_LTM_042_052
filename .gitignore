@@ -9,8 +9,10 @@ build/
 # Logs and outputs
 logs/*
 !logs/.gitkeep
-docs/ketqua/*
-!docs/ketqua/.gitkeep
+docs/ketqua/**
+!docs/ketqua/
+!docs/ketqua/**/
+!docs/ketqua/**/README.md
 
 # IDE and OS
 .vscode/

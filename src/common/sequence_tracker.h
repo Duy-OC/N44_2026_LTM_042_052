@@ -31,7 +31,7 @@ public:
     }
 
     // Goi mot lan cho moi frame MAVLink hop le.
-    void observe(uint8_t seq, TimePoint now)
+    int observe(uint8_t seq, TimePoint now)
     {
         // Sau khoang im lang dai, khong suy dien so frame mat
         // chi tu sequence 8 bit. Day la nguong heuristic.
@@ -50,7 +50,7 @@ public:
             lastSeq_ = seq;
             highest_ = 0;
             recent_[0] = true;
-            return;
+            return 0;
         }
 
         // Tinh khoang cach, co xu ly quay vong 255 -> 0.
@@ -60,7 +60,7 @@ public:
         if (delta == 0)
         {
             ++duplicates;
-            return;
+            return 0;
         }
 
         // Buoc tien trong cua so co the phan biet.
@@ -90,7 +90,7 @@ public:
                 recent_.erase(recent_.begin());
             }
 
-            return;
+            return delta - 1;
         }
 
         // Co the la frame cu hoac frame den muon.
@@ -113,7 +113,7 @@ public:
                 ++reordered;
             }
 
-            return;
+            return 0;
         }
 
         // Khong phan biet duoc nhay xa, reset hay frame qua cu.
@@ -123,6 +123,7 @@ public:
         lastSeq_ = seq;
         highest_ = 0;
         recent_[0] = true;
+        return 0;
     }
 
     // Uoc luong so vi tri sequence con thieu.

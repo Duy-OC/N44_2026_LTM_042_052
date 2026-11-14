@@ -17,12 +17,16 @@
 #include <cerrno>
 #include <cctype>
 #include <stdexcept>
+#include <sstream>
 
 struct RunOptions
 {
     std::string scenario = "DEFAULT";
     std::string runId;
     std::string outputDir = "docs/ketqua";
+    unsigned short udpPort = Config::UDP_PORT;
+    int measureSeconds = 60;
+    bool measure = false;
 };
 
 static std::string safeName(const std::string &value)
@@ -61,6 +65,23 @@ static RunOptions parseOptions(int argc, char **argv)
         else if (key == "--output-dir")
         {
             options.outputDir = value;
+        }
+        else if (key == "--udp-port")
+        {
+            std::size_t parsed = 0;
+            const unsigned long port = std::stoul(value, &parsed);
+            if (parsed != value.size() || port == 0 || port > 65535)
+                throw std::invalid_argument("UDP port khong hop le");
+            options.udpPort = static_cast<unsigned short>(port);
+        }
+        else if (key == "--measure-seconds")
+        {
+            std::size_t parsed = 0;
+            const unsigned long seconds = std::stoul(value, &parsed);
+            if (parsed != value.size() || seconds == 0 || seconds > 3600)
+                throw std::invalid_argument("Thoi gian do khong hop le");
+            options.measureSeconds = static_cast<int>(seconds);
+            options.measure = true;
         }
         else
         {
@@ -102,6 +123,9 @@ public:
 private:
     bool openSockets();
     void maintenance();
+    void handleText(Client &client, const std::string &line);
+    void sendCommand(int sysid, unsigned int owner, uint16_t command, float param1, float param7, unsigned int attempt);
+    std::string detail(TimePoint now) const;
 
     bool routeClientFrame(
         const Client &client,
@@ -130,6 +154,21 @@ private:
 
     std::map<SourceKey, UdpSource> sources_;
     std::deque<UdpFrame> outgoingUdp_;
+    SOCKET controller_ = INVALID_SOCKET;
+    TimePoint lastGcsHeartbeat_{};
+    TimePoint lastManualNoRouteLog_{};
+    struct PendingCommand
+    {
+        SOCKET owner = INVALID_SOCKET;
+        int sysid = 0;
+        uint16_t command = 0;
+        float param1 = 0;
+        float param7 = 0;
+        unsigned int attempts = 0;
+        TimePoint sentAt{};
+        unsigned int generation = 0;
+    };
+    std::map<int, PendingCommand> commands_;
 };
 
 Gateway::~Gateway()
@@ -142,7 +181,7 @@ bool Gateway::openSockets()
 {
     udp_ = Network::createBoundSocket(
         SOCK_DGRAM,
-        Config::UDP_PORT);
+        options_.udpPort);
 
     listener_ = Network::createBoundSocket(
         SOCK_STREAM,
@@ -170,16 +209,13 @@ int Gateway::run()
     if (!openSockets())
         return 1;
 
-    // Tao thu muc ket qua neu chua co
-    CreateDirectoryA("docs", nullptr);
-    CreateDirectoryA("docs/ketqua", nullptr);
-
-    if (!ingressQos_.open(
+    if (options_.measure && !ingressQos_.open(
             "gateway_ingress",
             Config::HEARTBEAT_TIMEOUT_SECONDS,
             options_.scenario,
             options_.runId,
-            options_.outputDir))
+            options_.outputDir,
+            options_.measureSeconds))
     {
         std::cerr << "Khong the khoi tao QoS cho Gateway\n";
         return 1;
@@ -187,11 +223,15 @@ int Gateway::run()
 
     std::cout
         << "=== PBL3 GATEWAY: ROUTER & QOS ===\n"
-        << "UDP Ingress: 0.0.0.0:" << Config::UDP_PORT << '\n'
-        << "TCP Egress:  127.0.0.1:" << Config::TCP_PORT << '\n'
+        << "UDP Ingress: 0.0.0.0:" << options_.udpPort << '\n'
+        << "TCP Egress:  0.0.0.0:" << Config::TCP_PORT << '\n'
         << "Heartbeat timeout: " << Config::HEARTBEAT_TIMEOUT_SECONDS << " giay\n"
-        << "Warm-up: 5 giay | Thoi gian do: 60 giay\n"
-        << "Scenario: " << options_.scenario << " | Run ID: " << options_.runId << "\n\n";
+        << "Che do: " << (options_.measure ? "DO QOS" : "CHAY BINH THUONG") << '\n';
+    if (options_.measure)
+        std::cout << "Warm-up: 5 giay | Thoi gian do: " << options_.measureSeconds
+                  << " giay | Scenario: " << options_.scenario
+                  << " | Run ID: " << options_.runId << '\n';
+    std::cout << '\n';
 
     while (true)
     {
@@ -244,6 +284,10 @@ int Gateway::run()
             {
                 return routeClientFrame(client, message);
             },
+            [this](Client &client, const std::string &line)
+            {
+                handleText(client, line);
+            },
             [this](SOCKET owner)
             {
                 purgeClientQueue(owner);
@@ -270,7 +314,60 @@ void Gateway::maintenance()
 {
     TimePoint now = Clock::now();
 
-    ingressQos_.tick(now);
+    if (lastGcsHeartbeat_ == TimePoint{} || elapsedSeconds(now, lastGcsHeartbeat_) >= 1.0)
+    {
+        lastGcsHeartbeat_ = now;
+        mavlink_message_t heartbeat{};
+        mavlink_msg_heartbeat_pack(255, MAV_COMP_ID_MISSIONPLANNER, &heartbeat,
+                                   MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE);
+        for (const auto &item : uavs_.all())
+            if (isOnline(item.second, now) && outgoingUdp_.size() < Config::MAX_UDP_PENDING)
+            {
+                UdpFrame frame{};
+                frame.owner = INVALID_SOCKET;
+                frame.target = item.first;
+                frame.generation = item.second.generation;
+                frame.destination = item.second.address;
+                frame.data = serialize(heartbeat);
+                outgoingUdp_.push_back(frame);
+            }
+    }
+
+    clients_.forEach([this, now](Client &client)
+    {
+        if (client.textMode && client.subscribeHz > 0 && now >= client.nextDetail)
+        {
+            clients_.queue(client.socket, detail(now));
+            client.nextDetail = now + std::chrono::milliseconds(1000 / client.subscribeHz);
+        }
+    });
+
+    for (auto it = commands_.begin(); it != commands_.end();)
+    {
+        PendingCommand command = it->second;
+        const Uav *uav = uavs_.get(command.sysid);
+        if (!uav || !isOnline(*uav, now) || uav->generation != command.generation)
+        {
+            clients_.queue(command.owner, "RESULT " + std::to_string(command.sysid) + " OFFLINE\n");
+            it = commands_.erase(it);
+        }
+        else if (elapsedSeconds(now, command.sentAt) >= 1.0)
+        {
+            if (command.attempts >= 3)
+            {
+                clients_.queue(command.owner, "RESULT " + std::to_string(command.sysid) + " TIMEOUT\n");
+                it = commands_.erase(it);
+            }
+            else
+            {
+                sendCommand(command.sysid, 0, command.command, command.param1, command.param7, command.attempts + 1);
+                ++it;
+            }
+        }
+        else ++it;
+    }
+
+    if (options_.measure) ingressQos_.tick(now);
 
     for (int sysid : uavs_.expire(now))
     {
@@ -321,6 +418,10 @@ void Gateway::purgeUavQueue(int sysid)
 
 void Gateway::purgeClientQueue(SOCKET owner)
 {
+    if (controller_ == owner) controller_ = INVALID_SOCKET;
+    for (auto it = commands_.begin(); it != commands_.end();)
+        if (it->second.owner == owner) it = commands_.erase(it);
+        else ++it;
     std::size_t before = outgoingUdp_.size();
 
     outgoingUdp_.erase(
@@ -340,11 +441,267 @@ void Gateway::purgeClientQueue(SOCKET owner)
                   << cancelled << '\n';
 }
 
+std::string Gateway::detail(TimePoint now) const
+{
+    std::string result;
+    for (const auto &item : uavs_.all())
+        if (isOnline(item.second, now))
+            result += "DETAIL " + item.second.telemetry.toJsonString(item.first, now) + "\n";
+    return result.empty() ? "DETAIL NONE\n" : result;
+}
+
+void Gateway::handleText(Client &client, const std::string &line)
+{
+    std::istringstream input(line);
+    std::string action, extra;
+    input >> action;
+    auto reply = [this, &client](const std::string &value)
+    {
+        clients_.queue(client.socket, value + "\n");
+    };
+
+    if (action == "GET_DETAIL")
+    {
+        int sysid = 0;
+        if (input >> sysid)
+        {
+            const Uav *uav = uavs_.get(sysid);
+            if (sysid < 1 || (input >> extra)) reply("ERR USAGE GET_DETAIL [sysid]");
+            else if (!uav || !isOnline(*uav, Clock::now())) reply("DETAIL NONE");
+            else reply("DETAIL " + uav->telemetry.toJsonString(sysid, Clock::now()));
+        }
+        else if (input.eof()) clients_.queue(client.socket, detail(Clock::now()));
+        else reply("ERR USAGE GET_DETAIL [sysid]");
+    }
+    else if (action == "SUBSCRIBE")
+    {
+        int hz = 0;
+        if (!(input >> hz) || hz < 1 || hz > 5 || (input >> extra))
+            reply("ERR USAGE SUBSCRIBE 1..5");
+        else
+        {
+            client.subscribeHz = hz;
+            client.nextDetail = Clock::now();
+            reply("OK SUBSCRIBE " + std::to_string(hz));
+        }
+    }
+    else if (action == "UNSUBSCRIBE")
+    {
+        client.subscribeHz = 0;
+        reply("OK UNSUBSCRIBE");
+    }
+    else if (action == "ACQUIRE")
+    {
+        if (input >> extra) reply("ERR USAGE ACQUIRE");
+        else if (controller_ == INVALID_SOCKET || controller_ == client.socket)
+        {
+            controller_ = client.socket;
+            reply("OK ACQUIRE");
+        }
+        else reply("ERR LOCKED");
+    }
+    else if (action == "RELEASE")
+    {
+        if (controller_ != client.socket) reply("ERR NOT_OWNER");
+        else
+        {
+            controller_ = INVALID_SOCKET;
+            for (auto it = commands_.begin(); it != commands_.end();)
+                if (it->second.owner == client.socket) it = commands_.erase(it);
+                else ++it;
+            purgeClientQueue(client.socket);
+            reply("OK RELEASE");
+        }
+    }
+    else if (action == "COMMAND")
+    {
+        int sysid = 0;
+        std::string name;
+        float altitude = 10.0f;
+        if (!(input >> sysid >> name) || sysid < 1 || sysid > 255)
+        {
+            reply("ERR USAGE COMMAND sysid ARM|DISARM|TAKEOFF|LAND [altitude_m]");
+            return;
+        }
+        if (name == "TAKEOFF")
+        {
+            if (input >> altitude)
+            {
+                if (!std::isfinite(altitude) || altitude < 1 || altitude > 100 || (input >> extra))
+                {
+                    reply("ERR ALTITUDE 1..100");
+                    return;
+                }
+            }
+            else if (!input.eof()) { reply("ERR ALTITUDE 1..100"); return; }
+        }
+        else if (input >> extra) { reply("ERR USAGE COMMAND sysid ARM|DISARM|TAKEOFF|LAND"); return; }
+
+        if (controller_ != client.socket) { reply("ERR NOT_OWNER"); return; }
+        const Uav *uav = uavs_.get(sysid);
+        if (!uav || !isOnline(*uav, Clock::now())) { reply("ERR UAV_OFFLINE"); return; }
+        if (commands_.count(sysid)) { reply("ERR COMMAND_BUSY"); return; }
+
+        uint16_t command = 0;
+        float param1 = 0;
+        if (name == "ARM") { command = MAV_CMD_COMPONENT_ARM_DISARM; param1 = 1; }
+        else if (name == "DISARM") { command = MAV_CMD_COMPONENT_ARM_DISARM; param1 = 0; }
+        else if (name == "TAKEOFF") command = MAV_CMD_NAV_TAKEOFF;
+        else if (name == "LAND") command = MAV_CMD_NAV_LAND;
+        else { reply("ERR UNKNOWN_COMMAND"); return; }
+
+        PendingCommand pending{};
+        pending.owner = client.socket;
+        pending.sysid = sysid;
+        pending.command = command;
+        pending.param1 = param1;
+        pending.param7 = name == "TAKEOFF" ? altitude : 0;
+        pending.generation = uav->generation;
+        commands_[sysid] = pending;
+        sendCommand(sysid, 0, command, param1, pending.param7, 1);
+        reply("OK COMMAND_PENDING " + std::to_string(sysid) + " " + std::to_string(command));
+    }
+    else reply("ERR UNKNOWN_COMMAND");
+}
+
+void Gateway::sendCommand(int sysid, unsigned int, uint16_t command,
+                          float param1, float param7, unsigned int attempt)
+{
+    auto found = commands_.find(sysid);
+    const Uav *uav = uavs_.get(sysid);
+    if (found == commands_.end() || !uav) return;
+    if (outgoingUdp_.size() >= Config::MAX_UDP_PENDING) return;
+
+    mavlink_message_t message{};
+    mavlink_msg_command_long_pack(255, MAV_COMP_ID_MISSIONPLANNER, &message,
+        static_cast<uint8_t>(sysid), MAV_COMP_ID_AUTOPILOT1, command,
+        static_cast<uint8_t>(attempt - 1), param1, 0, 0, 0, 0, 0, param7);
+    UdpFrame frame{};
+    frame.owner = found->second.owner;
+    frame.target = sysid;
+    frame.generation = uav->generation;
+    frame.destination = uav->address;
+    frame.data = serialize(message);
+    outgoingUdp_.push_back(frame);
+    found->second.attempts = attempt;
+    found->second.sentAt = Clock::now();
+}
+
 bool Gateway::routeClientFrame(
     const Client &client,
     const mavlink_message_t &message)
 {
+    if (message.msgid == MAVLINK_MSG_ID_HEARTBEAT)
+    {
+        // The gateway injects its own GCS heartbeat toward each UAV. A
+        // heartbeat from a TCP client (QGC) is ignored, not a policy block.
+        return true;
+    }
+
+    // QGC uses COMMAND_LONG/INT for telemetry and capability discovery.
+    // A raw MAVLink GCS (QGC) may also control the UAV directly. It takes
+    // the same controller lock as the text ACQUIRE/COMMAND protocol and
+    // acquires it automatically on the first control message.
+    const bool commandFrame = message.msgid == MAVLINK_MSG_ID_COMMAND_LONG ||
+                              message.msgid == MAVLINK_MSG_ID_COMMAND_INT;
+    uint16_t commandId = 0;
+    if (message.msgid == MAVLINK_MSG_ID_COMMAND_LONG)
+    {
+        mavlink_command_long_t decoded{};
+        mavlink_msg_command_long_decode(&message, &decoded);
+        commandId = decoded.command;
+    }
+    else if (message.msgid == MAVLINK_MSG_ID_COMMAND_INT)
+    {
+        mavlink_command_int_t decoded{};
+        mavlink_msg_command_int_decode(&message, &decoded);
+        commandId = decoded.command;
+    }
+
+    const bool manualControl = message.msgid == MAVLINK_MSG_ID_MANUAL_CONTROL;
+    const bool gcsFlightCommand = commandFrame &&
+        (commandId == MAV_CMD_NAV_LAND ||
+         commandId == MAV_CMD_NAV_TAKEOFF ||
+         commandId == MAV_CMD_DO_SET_MODE ||
+         commandId == MAV_CMD_COMPONENT_ARM_DISARM);
+    const bool gcsControlCommand = !client.textMode &&
+        (message.msgid == MAVLINK_MSG_ID_SET_MODE ||
+         manualControl || gcsFlightCommand);
+
+    const bool telemetryCommand = commandFrame &&
+        (commandId == MAV_CMD_GET_MESSAGE_INTERVAL ||
+         commandId == MAV_CMD_SET_MESSAGE_INTERVAL ||
+         commandId == MAV_CMD_REQUEST_MESSAGE ||
+         commandId == MAV_CMD_REQUEST_PROTOCOL_VERSION ||
+         commandId == MAV_CMD_REQUEST_AUTOPILOT_CAPABILITIES ||
+         commandId == MAV_CMD_RUN_PREARM_CHECKS ||
+         commandId == MAV_CMD_GET_HOME_POSITION);
+
     int target = getTargetSystem(message);
+    if (manualControl)
+    {
+        mavlink_manual_control_t control{};
+        mavlink_msg_manual_control_decode(&message, &control);
+        target = control.target;
+        if (target == 0)
+        {
+            ++stats_.blockedMessages;
+            ++stats_.blockedByPolicy;
+            return true;
+        }
+    }
+
+    if (gcsControlCommand && target <= 0)
+    {
+        // Never broadcast a flight command to every UAV. QGC targets one
+        // vehicle; a target of 0 is treated as invalid for control.
+        ++stats_.blockedMessages;
+        ++stats_.blockedByPolicy;
+        std::cout << "GCS CONTROL BLOCK: Client #" << client.id
+                  << " msgid=" << message.msgid
+                  << " command=" << commandId
+                  << " reason=target_khong_hop_le"
+                  << '\n';
+        return true;
+    }
+
+    if (manualControl && client.textMode && controller_ != client.socket)
+    {
+        // Text clients still need ACQUIRE before MANUAL_CONTROL.
+        ++stats_.blockedMessages;
+        ++stats_.blockedByPolicy;
+        return true;
+    }
+
+    if (message.msgid != MAVLINK_MSG_ID_PING &&
+        message.msgid != MAVLINK_MSG_ID_PARAM_REQUEST_READ &&
+        message.msgid != MAVLINK_MSG_ID_PARAM_REQUEST_LIST &&
+        message.msgid != MAVLINK_MSG_ID_PARAM_EXT_REQUEST_READ &&
+        message.msgid != MAVLINK_MSG_ID_PARAM_EXT_REQUEST_LIST &&
+        message.msgid != MAVLINK_MSG_ID_REQUEST_DATA_STREAM &&
+        message.msgid != MAVLINK_MSG_ID_REQUEST_EVENT &&
+        message.msgid != MAVLINK_MSG_ID_TIMESYNC &&
+        message.msgid != MAVLINK_MSG_ID_MISSION_REQUEST_LIST &&
+        message.msgid != MAVLINK_MSG_ID_MISSION_REQUEST_INT &&
+        message.msgid != MAVLINK_MSG_ID_MISSION_REQUEST &&
+        message.msgid != MAVLINK_MSG_ID_MANUAL_CONTROL &&
+        message.msgid != MAVLINK_MSG_ID_MISSION_ACK &&
+        !telemetryCommand &&
+        !gcsControlCommand)
+    {
+        ++stats_.blockedMessages;
+        ++stats_.blockedByPolicy;
+        if (message.msgid == MAVLINK_MSG_ID_COMMAND_LONG ||
+            message.msgid == MAVLINK_MSG_ID_COMMAND_INT)
+        {
+            std::cerr << "[POLICY BLOCK] msgid=" << message.msgid
+                      << " command=" << commandId
+                      << " target=" << target
+                      << " from_sysid=" << static_cast<int>(message.sysid)
+                      << '\n';
+        }
+        return true;
+    }
 
     if (target < 0)
     {
@@ -352,17 +709,32 @@ bool Gateway::routeClientFrame(
         ++stats_.blockedUnknownMetadata;
         return true;
     }
+    if (telemetryCommand && commandId == MAV_CMD_SET_MESSAGE_INTERVAL && target == 0)
+    {
+        ++stats_.blockedMessages;
+        ++stats_.blockedByPolicy;
+        return true;
+    }
 
+    TimePoint now = Clock::now();
     std::vector<int> destinations =
-        uavs_.destinations(target, Clock::now());
+        uavs_.destinations(target, now);
 
     if (destinations.empty())
     {
         ++stats_.blockedMessages;
         ++stats_.blockedNoRoute;
 
-        if (target != 0)
+        const bool throttleManual =
+            message.msgid == MAVLINK_MSG_ID_MANUAL_CONTROL &&
+            lastManualNoRouteLog_ != TimePoint{} &&
+            elapsedSeconds(now, lastManualNoRouteLog_) < 1.0;
+        if (target != 0 && !throttleManual)
         {
+            if (message.msgid == MAVLINK_MSG_ID_MANUAL_CONTROL)
+            {
+                lastManualNoRouteLog_ = now;
+            }
             std::cout
                 << "BLOCK: target_system=" << target
                 << " offline/chua hoc"
@@ -371,6 +743,32 @@ bool Gateway::routeClientFrame(
         }
 
         return true;
+    }
+
+    if (gcsControlCommand)
+    {
+        // The route exists; only now take the controller lock so a failed
+        // command (offline UAV) does not lock out other clients.
+        if (controller_ == INVALID_SOCKET)
+        {
+            controller_ = client.socket;
+            std::cout << "GCS CONTROL: Client #" << client.id
+                      << " giu quyen dieu khien\n";
+        }
+        else if (controller_ != client.socket)
+        {
+            ++stats_.blockedMessages;
+            ++stats_.blockedByPolicy;
+            if (message.msgid != MAVLINK_MSG_ID_MANUAL_CONTROL)
+            {
+                std::cout << "GCS CONTROL BLOCK: Client #" << client.id
+                          << " msgid=" << message.msgid
+                          << " command=" << commandId
+                          << " reason=client_khac_dang_giu_quyen"
+                          << '\n';
+            }
+            return true;
+        }
     }
 
     if (outgoingUdp_.size() + destinations.size() >
@@ -528,6 +926,9 @@ void Gateway::receiveUavData()
         uint8_t status = parser.feed(
             static_cast<uint8_t>(buffer[i]));
 
+        if (status == MAVLINK_FRAMING_BAD_CRC)
+            if (options_.measure) ingressQos_.onCrc(Clock::now());
+
         if (!stats_.acceptParse(status, true))
         {
             continue;
@@ -551,7 +952,7 @@ void Gateway::receiveUavData()
         std::string packet = serialize(message);
 
         // Ghi nhan QoS ingress tu UAV / Proxy
-        ingressQos_.onFrame(
+        if (options_.measure) ingressQos_.onFrame(
             message,
             packet.size(),
             sender,
@@ -573,6 +974,21 @@ void Gateway::receiveUavData()
             mavlink_msg_command_ack_decode(
                 &message,
                 &ack);
+
+            auto pending = commands_.find(message.sysid);
+            if (pending != commands_.end() && pending->second.command == ack.command &&
+                pending->second.generation == uavs_.get(message.sysid)->generation)
+            {
+                if (ack.result == MAV_RESULT_IN_PROGRESS)
+                    pending->second.sentAt = Clock::now();
+                else
+                {
+                    clients_.queue(pending->second.owner,
+                        "RESULT " + std::to_string(message.sysid) + " " +
+                        std::to_string(ack.command) + " " + std::to_string(ack.result) + "\n");
+                    commands_.erase(pending);
+                }
+            }
 
             std::cout
                 << "ACK UAV "
@@ -598,7 +1014,7 @@ int main(int argc, char **argv)
     catch (const std::exception &error)
     {
         std::cerr << error.what()
-                  << "\nUsage: gateway.exe [--scenario NAME] [--run-id ID] [--output-dir DIR]\n";
+                  << "\nUsage: gateway.exe [--udp-port PORT] [--measure-seconds SECONDS --scenario NAME --run-id ID --output-dir DIR]\n";
         return 1;
     }
 

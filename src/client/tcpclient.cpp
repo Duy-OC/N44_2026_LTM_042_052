@@ -2,7 +2,6 @@
 #include "config.h"
 #include "mavlink_codec.h"
 #include "time_utils.h"
-#include "qos.h"
 #include "uav_manager.h"
 
 #include <cstdint>
@@ -142,14 +141,7 @@ int main(int argc, char **argv)
     }
 
     std::cout << "[SUCCESS] Da ket noi thanh cong toi Gateway!\n"
-              << "Dang khoi tao bo do QoS va Dashboard...\n";
-
-    // 6. Mo QoS ghi file CSV
-    QosRecorder qos;
-    if (!qos.open("client_rx", 3.0))
-    {
-        std::cerr << "Khong khoi tao duoc QoS.\n";
-    }
+              << "Dang hien thi Dashboard...\n";
 
     // 7. Bo quan ly Telemetry UAV tai Client
     UavManager uavManager;
@@ -235,9 +227,6 @@ int main(int argc, char **argv)
                     ++frames;
                     const mavlink_message_t &message = parser.message;
 
-                    // Ghi QoS
-                    qos.onFrame(message, serialize(message).size(), server, now);
-
                     // Giai ma trang thai telemetry cua UAV de hien thi dashboard
                     uavManager.observeHeartbeat(message, server, now);
                     uavManager.decodeTelemetry(message, now);
@@ -246,8 +235,6 @@ int main(int argc, char **argv)
         }
 
         TimePoint now = Clock::now();
-        qos.tick(now);
-
         // Kiem tra het han offline (3s)
         uavManager.expire(now);
 

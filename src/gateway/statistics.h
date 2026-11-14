@@ -27,6 +27,7 @@ struct Statistics
 
     unsigned long long droppedUdpFrames = 0;
     unsigned long long blockedMessages = 0;
+    unsigned long long blockedByPolicy = 0;
     unsigned long long slowClients = 0;
 
     unsigned long long blockedUnknownMetadata = 0;
@@ -108,9 +109,10 @@ public:
             << " | UDP dropped/cancelled="
             << stats.droppedUdpFrames
 
-            << "\nBlocked messages=" << stats.blockedMessages
-            << " (no route=" << stats.blockedNoRoute
-            << ", unknown metadata="
+            << "\nClient MAVLink bi chan=" << stats.blockedMessages
+            << " (chinh sach dieu khien=" << stats.blockedByPolicy
+            << ", khong co duong den UAV=" << stats.blockedNoRoute
+            << ", thieu metadata="
             << stats.blockedUnknownMetadata << ")"
             << " | Slow clients=" << stats.slowClients
 

@@ -15,12 +15,16 @@ namespace Markov
         double urb = 0.5;
         double dur_s = 2.0;
         std::uint64_t slot_ms = 100;
+        bool packetMode = false;
+        double badPackets = 4.0;
         double lossgood = 0.0;
         double lossbad = 1.0;
         std::uint32_t seed = 1;
 
         double pBG() const
         {
+            if (packetMode)
+                return 1.0 / badPackets;
             return (static_cast<double>(slot_ms) / 1000.0) / dur_s;
         }
 
@@ -35,6 +39,7 @@ namespace Markov
         {
             if (!std::isfinite(urb) ||
                 !std::isfinite(dur_s) ||
+                !std::isfinite(badPackets) ||
                 !std::isfinite(lossgood) ||
                 !std::isfinite(lossbad))
             {
@@ -43,7 +48,7 @@ namespace Markov
             }
 
             if (urb < 0.0 || urb >= 1.0 ||
-                dur_s <= 0.0 || slot_ms == 0 ||
+                dur_s <= 0.0 || slot_ms == 0 || badPackets < 1.0 ||
                 lossgood < 0.0 || lossgood > 1.0 ||
                 lossbad < 0.0 || lossbad > 1.0)
             {
@@ -163,6 +168,9 @@ namespace Markov
 
             last_ms_ = now_ms;
 
+            if (config_.packetMode)
+                return;
+
             while (now_ms - boundary_ms_ >= config_.slot_ms)
             {
                 // Ghi nhan khe vua ket thuc.
@@ -213,6 +221,35 @@ namespace Markov
         bool keepFrame(std::uint64_t now_ms)
         {
             tick(now_ms);
+            if (config_.packetMode)
+            {
+                if (stats_.seen > 0 && config_.urb > 0.0)
+                {
+                    const double random = draw(stateRng_);
+                    if (bad_)
+                    {
+                        if (random < config_.pBG())
+                        {
+                            if (!initialPartial_)
+                            {
+                                ++stats_.completeBadRuns;
+                                stats_.completeBadMs += now_ms - badStart_ms_;
+                            }
+                            initialPartial_ = false;
+                            bad_ = false;
+                            if (onState_) onState_(now_ms, bad_);
+                        }
+                    }
+                    else if (random < config_.pGB())
+                    {
+                        bad_ = true;
+                        badStart_ms_ = now_ms;
+                        if (onState_) onState_(now_ms, bad_);
+                    }
+                }
+                ++stats_.slots;
+                if (bad_) ++stats_.badSlots;
+            }
             ++stats_.seen;
 
             // urb=0: tat emulator, giu moi frame.

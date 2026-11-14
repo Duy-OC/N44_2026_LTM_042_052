@@ -9,6 +9,7 @@
 #include <functional>
 #include <algorithm>
 #include <iostream>
+#include <cctype>
 
 struct Client
 {
@@ -17,6 +18,11 @@ struct Client
 
     MavlinkParser parser;
     std::string pending;
+    std::string input;
+    bool textMode = false;
+    bool rawMode = false;
+    int subscribeHz = 0;
+    TimePoint nextDetail{};
 
     unsigned long long sentBytes = 0;
 };
@@ -28,6 +34,7 @@ public:
         bool(const Client &, const mavlink_message_t &)>;
 
     using CloseHandler = std::function<void(SOCKET)>;
+    using TextHandler = std::function<void(Client &, const std::string &)>;
 
     ~ClientManager()
     {
@@ -40,6 +47,23 @@ public:
     std::size_t size() const
     {
         return clients_.size();
+    }
+
+    bool queue(SOCKET socket, const std::string &data)
+    {
+        for (auto &client : clients_)
+            if (client.socket == socket && client.pending.size() + data.size() <= Config::MAX_TCP_PENDING)
+            {
+                client.pending += data;
+                return true;
+            }
+        return false;
+    }
+
+    template <typename F> void forEach(F fn)
+    {
+        for (auto &client : clients_)
+            if (client.socket != INVALID_SOCKET) fn(client);
     }
 
     void prepareSets(
@@ -109,6 +133,7 @@ public:
         fd_set &writes,
         Statistics &stats,
         const FrameHandler &onFrame,
+        const TextHandler &onText,
         const CloseHandler &onClose)
     {
         char buffer[65536];
@@ -139,8 +164,36 @@ public:
                 {
                     for (int i = 0; i < n; ++i)
                     {
+                        const unsigned char byte = static_cast<unsigned char>(buffer[i]);
+                        if (!client.rawMode && client.input.empty() &&
+                            (byte == MAVLINK_STX || byte == MAVLINK_STX_MAVLINK1))
+                            client.rawMode = true;
+                        if (!client.rawMode && (client.textMode || (client.input.empty() &&
+                            std::isalpha(byte))))
+                        {
+                            client.textMode = true;
+                            if (byte == '\n')
+                            {
+                                if (!client.input.empty() && client.input.back() == '\r') client.input.pop_back();
+                                onText(client, client.input);
+                                client.input.clear();
+                            }
+                            else if (client.input.size() < 1024 && byte >= 32 && byte < 127)
+                                client.input.push_back(static_cast<char>(byte));
+                            else if (client.input.size() >= 1024)
+                            {
+                                disconnect(client, onClose);
+                                break;
+                            }
+                            continue;
+                        }
+                        client.rawMode = true;
                         uint8_t status = client.parser.feed(
-                            static_cast<uint8_t>(buffer[i]));
+                            byte);
+                        if (status == MAVLINK_FRAMING_OK ||
+                            status == MAVLINK_FRAMING_BAD_CRC ||
+                            status == MAVLINK_FRAMING_BAD_SIGNATURE)
+                            client.rawMode = false;
 
                         if (!stats.acceptParse(status, false))
                         {
@@ -205,6 +258,7 @@ public:
     {
         for (auto &client : clients_)
         {
+            if (client.textMode || client.socket == INVALID_SOCKET) continue;
             if (client.pending.size() + packet.size() >
                 Config::MAX_TCP_PENDING)
             {

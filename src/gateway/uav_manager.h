@@ -172,6 +172,14 @@ struct UavTelemetry
     }
 
     // Xuat dinh dang JSON de Client de dang parse bang may
+    static std::string jsonNumber(double value, int precision)
+    {
+        if (!std::isfinite(value)) return "null";
+        std::ostringstream number;
+        number << std::fixed << std::setprecision(precision) << value;
+        return number.str();
+    }
+
     std::string toJsonString(int sysid, TimePoint now) const
     {
         double age = elapsedSeconds(now, lastUpdate);
@@ -179,25 +187,25 @@ struct UavTelemetry
         ss << std::fixed;
         ss << "{"
            << "\"sysid\":" << sysid << ","
-           << "\"age_s\":" << std::setprecision(2) << age << ","
+           << "\"age_s\":" << jsonNumber(age, 2) << ","
            << "\"armed\":" << (armed ? "true" : "false") << ","
            << "\"flight_mode\":\"" << flightMode << "\","
            << "\"battery\":{"
-           << "\"voltage_v\":" << std::setprecision(2) << voltageBattery << ","
-           << "\"current_a\":" << std::setprecision(2) << currentBattery << ","
+           << "\"voltage_v\":" << jsonNumber(voltageBattery, 2) << ","
+           << "\"current_a\":" << jsonNumber(currentBattery, 2) << ","
            << "\"remaining_pct\":" << static_cast<int>(batteryRemaining)
            << "},"
            << "\"position\":{"
-           << "\"lat\":" << std::setprecision(7) << latitude << ","
-           << "\"lon\":" << std::setprecision(7) << longitude << ","
-           << "\"alt_rel_m\":" << std::setprecision(2) << relativeAlt << ","
-           << "\"alt_msl_m\":" << std::setprecision(2) << altitudeMSL << ","
-           << "\"heading_deg\":" << std::setprecision(1) << heading
+           << "\"lat\":" << jsonNumber(latitude, 7) << ","
+           << "\"lon\":" << jsonNumber(longitude, 7) << ","
+           << "\"alt_rel_m\":" << jsonNumber(relativeAlt, 2) << ","
+           << "\"alt_msl_m\":" << jsonNumber(altitudeMSL, 2) << ","
+           << "\"heading_deg\":" << jsonNumber(heading, 1)
            << "},"
            << "\"attitude\":{"
-           << "\"roll_deg\":" << std::setprecision(2) << roll << ","
-           << "\"pitch_deg\":" << std::setprecision(2) << pitch << ","
-           << "\"yaw_deg\":" << std::setprecision(2) << yaw
+           << "\"roll_deg\":" << jsonNumber(roll, 2) << ","
+           << "\"pitch_deg\":" << jsonNumber(pitch, 2) << ","
+           << "\"yaw_deg\":" << jsonNumber(yaw, 2)
            << "},"
            << "\"gps\":{"
            << "\"fix_type\":" << static_cast<int>(gpsFixType) << ","
@@ -205,10 +213,10 @@ struct UavTelemetry
            << "\"satellites\":" << static_cast<int>(satellitesVisible)
            << "},"
            << "\"hud\":{"
-           << "\"groundspeed_ms\":" << std::setprecision(2) << groundspeed << ","
-           << "\"airspeed_ms\":" << std::setprecision(2) << airspeed << ","
-           << "\"climb_ms\":" << std::setprecision(2) << climbRate << ","
-           << "\"throttle_pct\":" << std::setprecision(0) << throttle
+           << "\"groundspeed_ms\":" << jsonNumber(groundspeed, 2) << ","
+           << "\"airspeed_ms\":" << jsonNumber(airspeed, 2) << ","
+           << "\"climb_ms\":" << jsonNumber(climbRate, 2) << ","
+           << "\"throttle_pct\":" << jsonNumber(throttle, 0)
            << "}"
            << "}";
         return ss.str();
@@ -223,7 +231,8 @@ struct Uav
     sockaddr_in address{};
 
     bool online = false;
-    TimePoint lastHeartbeat{};
+    // Thoi diem nhan frame MAVLink hop le gan nhat tu UAV (heartbeat hoac telemetry).
+    TimePoint lastSeen{};
 
     unsigned int generation = 0;
     unsigned long long receivedFrames = 0;
@@ -234,7 +243,7 @@ struct Uav
 inline bool isOnline(const Uav &uav, TimePoint now)
 {
     return uav.online &&
-           elapsedSeconds(now, uav.lastHeartbeat) <
+           elapsedSeconds(now, uav.lastSeen) <
                Config::HEARTBEAT_TIMEOUT_SECONDS;
 }
 
@@ -285,7 +294,7 @@ public:
         }
 
         uav.online = true;
-        uav.lastHeartbeat = now;
+        uav.lastSeen = now;
 
         // Giai ma heartbeat vao telemetry
         decodeHeartbeat(uav.telemetry, heartbeat, now);
@@ -413,11 +422,20 @@ public:
     {
         auto found = uavs_.find(message.sysid);
         if (found == uavs_.end() ||
-            !isOnline(found->second, now) ||
             !Network::sameAddress(found->second.address, sender))
         {
             return false;
         }
+
+        // Bat ky frame MAVLink hop le nao tu endpoint da hoc cung chung minh
+        // route con song. Chi dua vao heartbeat 1 Hz de timeout se lam route
+        // chap chon va lam mat MANUAL_CONTROL khi heartbeat tre.
+        if (!found->second.online)
+        {
+            ++found->second.generation;
+        }
+        found->second.online = true;
+        found->second.lastSeen = now;
 
         ++found->second.receivedFrames;
         decodeTelemetry(message, now);

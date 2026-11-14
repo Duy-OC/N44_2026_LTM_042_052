@@ -7,7 +7,7 @@ namespace Config
     constexpr unsigned short UDP_PORT = 14550;
     constexpr unsigned short TCP_PORT = 5760;
 
-    constexpr int HEARTBEAT_TIMEOUT_SECONDS = 5;
+    constexpr int HEARTBEAT_TIMEOUT_SECONDS = 3;
     constexpr int STATS_INTERVAL_SECONDS = 5;
     constexpr int SOURCE_IDLE_SECONDS = 30;
 
