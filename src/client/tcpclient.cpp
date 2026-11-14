@@ -3,105 +3,158 @@
 #include "mavlink_codec.h"
 #include "time_utils.h"
 #include "qos.h"
+#include "uav_manager.h"
 
 #include <cstdint>
 #include <iostream>
+#include <iomanip>
+#include <sstream>
 
-int main()
+// Ham ve thanh pin truc quan [||||||||  ]
+std::string batteryBar(int8_t pct)
 {
-    // Hien log ngay khi stdout/stderr duoc luu qua Tee-Object.
+    if (pct < 0) return "[UNKNOWN]";
+    int bars = pct / 10;
+    std::string s = "[";
+    for (int i = 0; i < 10; ++i)
+    {
+        s += (i < bars) ? "|" : " ";
+    }
+    s += "] " + std::to_string(pct) + "%";
+    return s;
+}
+
+// Ham hien thi Live Dashboard tren Console
+void renderDashboard(
+    const UavManager &uavManager,
+    unsigned long long totalFrames,
+    unsigned long long totalBytes,
+    double frameRate,
+    double byteRate,
+    unsigned long long crcErrors,
+    TimePoint now)
+{
+    const auto &uavs = uavManager.all();
+
+    std::cout << "\n========================================================================================\n"
+              << "                    PBL3 MAVLINK TCP CLIENT - UAV LIVE DASHBOARD                        \n"
+              << "========================================================================================\n";
+
+    if (uavs.empty())
+    {
+        std::cout << "  [DANG CHO DU LIEU TU GATEWAY...] Chua nhan duoc goi tin tu UAV nao qua TCP.\n"
+                  << "  Hay dam bao: PX4 SITL -> (Proxy) -> Gateway 14550 dang hoat dong.\n";
+    }
+    else
+    {
+        for (const auto &item : uavs)
+        {
+            int sysid = item.first;
+            const Uav &uav = item.second;
+            const UavTelemetry &tel = uav.telemetry;
+            bool online = isOnline(uav, now);
+            double age = elapsedSeconds(now, tel.lastUpdate);
+
+            std::cout << "  UAV [SYSID: " << sysid << "]  "
+                      << "Trang thai: " << (online ? "[ONLINE]" : "[OFFLINE/TIMEOUT]")
+                      << "  |  Che do bay: [" << tel.flightMode << "]\n"
+                      << "  Do tuoi du lieu: " << std::fixed << std::setprecision(1) << age << "s truoc"
+                      << "  |  TCP RX Rate: " << std::setprecision(1) << frameRate << " frames/s ("
+                      << (byteRate / 1024.0) << " kB/s)\n"
+                      << "----------------------------------------------------------------------------------------\n"
+                      << "  [PIN & NGUON]      Dien ap: " << std::setprecision(2) << tel.voltageBattery << " V"
+                      << "      | Dong dien: " << std::setprecision(2) << tel.currentBattery << " A"
+                      << "     | Pin: " << batteryBar(tel.batteryRemaining) << "\n"
+                      << "  [GPS & DO CAO]     Vi do: " << std::setprecision(6) << tel.latitude << " deg"
+                      << "    | Kinh do: " << std::setprecision(6) << tel.longitude << " deg"
+                      << "   | GPS: " << tel.gpsFixString() << " (" << static_cast<int>(tel.satellitesVisible) << " ve tinh)\n"
+                      << "                     Do cao tuong doi: " << std::setprecision(1) << tel.relativeAlt << " m"
+                      << "   | Do cao MSL: " << std::setprecision(1) << tel.altitudeMSL << " m"
+                      << "    | Heading: " << std::setprecision(1) << tel.heading << " deg\n"
+                      << "  [GOC NGHIENG]      Roll: " << std::setprecision(1) << tel.roll << " deg"
+                      << "         | Pitch: " << std::setprecision(1) << tel.pitch << " deg"
+                      << "           | Yaw: " << std::setprecision(1) << tel.yaw << " deg\n"
+                      << "  [TOC DO (HUD)]     Mat dat: " << std::setprecision(1) << tel.groundspeed << " m/s"
+                      << "      | Gio: " << std::setprecision(1) << tel.airspeed << " m/s"
+                      << "          | Leo cao: " << std::setprecision(1) << tel.climbRate << " m/s"
+                      << " | Tay ga: " << static_cast<int>(tel.throttle) << "%\n";
+        }
+    }
+
+    std::cout << "----------------------------------------------------------------------------------------\n"
+              << "  Thong ke TCP Client: Tong frame: " << totalFrames
+              << "  |  Tong bytes: " << (totalBytes / 1024.0) << " kB"
+              << "  |  Loi CRC: " << crcErrors << "\n"
+              << "========================================================================================\n\n";
+}
+
+int main(int argc, char **argv)
+{
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
-    // 1. Khoi tao WinSock.
-    Network::Runtime winsock;
+    unsigned short port = Config::TCP_PORT; // 5760
+    const char *host = "127.0.0.1";
 
+    if (argc >= 2) host = argv[1];
+    if (argc >= 3) port = static_cast<unsigned short>(std::atoi(argv[2]));
+
+    // 1. Khoi tao WinSock
+    Network::Runtime winsock;
     if (winsock.error() != 0)
     {
-        std::cerr
-            << "WSAStartup loi: "
-            << winsock.error()
-            << '\n';
-
+        std::cerr << "WSAStartup loi: " << winsock.error() << '\n';
         return 1;
     }
 
-    // 2. Tao socket TCP.
-    SOCKET clientSocket =
-        ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
+    // 2. Tao socket TCP
+    SOCKET clientSocket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (clientSocket == INVALID_SOCKET)
     {
-        std::cerr
-            << "Tao socket loi: "
-            << WSAGetLastError()
-            << '\n';
-
+        std::cerr << "Tao socket loi: " << WSAGetLastError() << '\n';
         return 1;
     }
 
-    // 3. Dia chi Gateway tren cung may Windows.
+    // 3. Dia chi Gateway
     sockaddr_in server{};
-
     server.sin_family = AF_INET;
-    server.sin_port = htons(Config::TCP_PORT);
-    server.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    server.sin_port = htons(port);
+    server.sin_addr.s_addr = inet_addr(host);
 
-    // 4. Ket noi Gateway.
-    if (connect(
-            clientSocket,
-            reinterpret_cast<const sockaddr *>(&server),
-            sizeof(server)) == SOCKET_ERROR)
+    std::cout << "[TCP Client] Dang ket noi toi Gateway " << host << ":" << port << "...\n";
+
+    // 4. Ket noi Gateway
+    if (connect(clientSocket, reinterpret_cast<const sockaddr *>(&server), sizeof(server)) == SOCKET_ERROR)
     {
-
-        std::cerr
-            << "Ket noi Gateway loi: "
-            << WSAGetLastError()
-            << '\n';
-
+        std::cerr << "[ERROR] Khong the ket noi toi Gateway (" << host << ":" << port
+                  << "). Hay dam bao gateway.exe dang chay!\n"
+                  << "Loi WinSock: " << WSAGetLastError() << '\n';
         Network::closeSocket(clientSocket);
         return 1;
     }
 
-    // 5. Chuyen sang nonblocking sau khi ket noi.
+    // 5. Chuyen sang non-blocking
     if (!Network::setNonblocking(clientSocket))
     {
-        std::cerr
-            << "Dat nonblocking loi: "
-            << WSAGetLastError()
-            << '\n';
-
+        std::cerr << "Dat nonblocking loi: " << WSAGetLastError() << '\n';
         Network::closeSocket(clientSocket);
         return 1;
     }
 
-    std::cout
-        << "=== PBL3 TCP CLIENT + QOS ===\n"
-        << "Gateway: 127.0.0.1:"
-        << Config::TCP_PORT
-        << '\n'
-        << "Heartbeat timeout: 3 giay\n"
-        << "Warm-up: 5 giay | Do: 60 giay\n\n";
+    std::cout << "[SUCCESS] Da ket noi thanh cong toi Gateway!\n"
+              << "Dang khoi tao bo do QoS va Dashboard...\n";
 
-    // 6. Mo hai file CSV cho client.
+    // 6. Mo QoS ghi file CSV
     QosRecorder qos;
-
     if (!qos.open("client_rx", 3.0))
     {
-        std::cerr
-            << "Khong khoi tao duoc QoS.\n"
-            << "Hay tao thu muc docs/ketqua "
-            << "va chay tu thu muc goc du an.\n";
-
-        Network::closeSocket(clientSocket);
-        return 1;
+        std::cerr << "Khong khoi tao duoc QoS.\n";
     }
 
-    // Parser phai ton tai xuyen suot ket noi:
-    // mot frame co the bi chia qua nhieu lan recv().
+    // 7. Bo quan ly Telemetry UAV tai Client
+    UavManager uavManager;
     MavlinkParser parser;
 
-    // Thong ke van hanh tu luc client bat dau nhan.
     unsigned long long frames = 0;
     unsigned long long receivedBytes = 0;
     unsigned long long crcErrors = 0;
@@ -111,166 +164,108 @@ int main()
     unsigned long long previousBytes = 0;
 
     TimePoint lastReport = Clock::now();
+    TimePoint lastDashboard = Clock::now();
 
     char buffer[4096];
     int exitCode = 0;
 
-    // 7. Vong lap nhan du lieu.
+    // 8. Vong lap nhan va hien thi du lieu
     while (true)
     {
         fd_set reads;
-
         FD_ZERO(&reads);
         FD_SET(clientSocket, &reads);
 
         timeval timeout{};
-        timeout.tv_usec = Config::SELECT_TIMEOUT_US;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000; // 100ms
 
-        int ready = select(
-            0,
-            &reads,
-            nullptr,
-            nullptr,
-            &timeout);
-
+        int ready = select(0, &reads, nullptr, nullptr, &timeout);
         if (ready == SOCKET_ERROR)
         {
-            std::cerr
-                << "select loi: "
-                << WSAGetLastError()
-                << '\n';
-
+            std::cerr << "select loi: " << WSAGetLastError() << '\n';
             exitCode = 1;
             break;
         }
 
         if (FD_ISSET(clientSocket, &reads))
         {
-            int received = recv(
-                clientSocket,
-                buffer,
-                static_cast<int>(sizeof(buffer)),
-                0);
+            int received = recv(clientSocket, buffer, static_cast<int>(sizeof(buffer)), 0);
 
             if (received == 0)
             {
-                std::cout
-                    << "Gateway da dong ket noi TCP.\n";
-
+                std::cout << "\n[TCP Client] Gateway da dong ket noi TCP.\n";
                 break;
             }
 
             if (received == SOCKET_ERROR)
             {
                 int error = WSAGetLastError();
-
                 if (error != WSAEWOULDBLOCK)
                 {
-                    std::cerr
-                        << "recv loi: "
-                        << error
-                        << '\n';
-
+                    std::cerr << "recv loi: " << error << '\n';
                     exitCode = 1;
                     break;
                 }
             }
             else
             {
-                receivedBytes +=
-                    static_cast<unsigned long long>(received);
+                receivedBytes += static_cast<unsigned long long>(received);
+                TimePoint now = Clock::now();
 
-                // TCP la luong byte:
-                // dua tung byte vao parser MAVLink.
                 for (int i = 0; i < received; ++i)
                 {
-                    uint8_t status = parser.feed(
-                        static_cast<uint8_t>(buffer[i]));
+                    uint8_t status = parser.feed(static_cast<uint8_t>(buffer[i]));
 
                     if (status == MAVLINK_FRAMING_BAD_CRC)
                     {
                         ++crcErrors;
                         continue;
                     }
-
                     if (status == MAVLINK_FRAMING_BAD_SIGNATURE)
                     {
                         ++signatureErrors;
                         continue;
                     }
-
                     if (status != MAVLINK_FRAMING_OK)
                     {
                         continue;
                     }
 
                     ++frames;
+                    const mavlink_message_t &message = parser.message;
 
-                    const mavlink_message_t &message =
-                        parser.message;
+                    // Ghi QoS
+                    qos.onFrame(message, serialize(message).size(), server, now);
 
-                    // Chi ghi QoS sau khi ghep du frame hop le.
-                    qos.onFrame(
-                        message,
-                        serialize(message).size(),
-                        server,
-                        Clock::now());
-
-                    // Chi in heartbeat de tranh qua nhieu log.
-                    if (message.msgid ==
-                        MAVLINK_MSG_ID_HEARTBEAT)
-                    {
-
-                        std::cout
-                            << "HEARTBEAT"
-                            << " | SYSID="
-                            << static_cast<int>(message.sysid)
-                            << " | COMPID="
-                            << static_cast<int>(message.compid)
-                            << " | SEQ="
-                            << static_cast<int>(message.seq)
-                            << '\n';
-                    }
+                    // Giai ma trang thai telemetry cua UAV de hien thi dashboard
+                    uavManager.observeHeartbeat(message, server, now);
+                    uavManager.decodeTelemetry(message, now);
                 }
             }
         }
 
-        // Phai chay ca khi khong nhan duoc du lieu:
-        // phat hien heartbeat timeout va ghi CSV dinh ky.
         TimePoint now = Clock::now();
         qos.tick(now);
 
-        double seconds =
-            elapsedSeconds(now, lastReport);
+        // Kiem tra het han offline (3s)
+        uavManager.expire(now);
 
-        if (seconds >= Config::STATS_INTERVAL_SECONDS)
+        // Cap nhat Live Dashboard dinh ky moi 1 giay
+        double dashElapsed = elapsedSeconds(now, lastDashboard);
+        if (dashElapsed >= 1.0)
         {
-            double frameRate =
-                (frames - previousFrames) / seconds;
+            double frameRate = (frames - previousFrames) / dashElapsed;
+            double byteRate = (receivedBytes - previousBytes) / dashElapsed;
 
-            double byteRate =
-                (receivedBytes - previousBytes) / seconds;
-
-            std::cout
-                << "\n=== CLIENT STATS ===\n"
-                << "Frames=" << frames
-                << " | TCP RX bytes=" << receivedBytes
-                << '\n'
-                << "CRC errors=" << crcErrors
-                << " | Signature errors=" << signatureErrors
-                << '\n'
-                << "Rate=" << frameRate << " frames/s"
-                << " | " << byteRate << " B/s\n"
-                << "====================\n\n";
+            renderDashboard(uavManager, frames, receivedBytes, frameRate, byteRate, crcErrors, now);
 
             previousFrames = frames;
             previousBytes = receivedBytes;
-            lastReport = now;
+            lastDashboard = now;
         }
     }
 
-    // 8. Dong socket truoc khi WinSock duoc don dep.
     Network::closeSocket(clientSocket);
-
     return exitCode;
 }
