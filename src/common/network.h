@@ -92,10 +92,8 @@ namespace Network
         address.sin_family = AF_INET;
         address.sin_port = htons(port);
 
-        // UDP nhan tu WSL.
-        // TCP chi nhan client tren cung Windows.
-        address.sin_addr.s_addr = htonl(
-            type == SOCK_DGRAM ? INADDR_ANY : INADDR_LOOPBACK);
+        // Bind to all local interfaces for UDP and TCP.
+        address.sin_addr.s_addr = htonl(INADDR_ANY);
 
         if (bind(
                 socket,
