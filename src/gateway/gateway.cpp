@@ -514,10 +514,6 @@ void Gateway::handleText(Client &client, const std::string &line)
         if (controller_ != client.socket) reply("ERR NOT_OWNER");
         else
         {
-            controller_ = INVALID_SOCKET;
-            for (auto it = commands_.begin(); it != commands_.end();)
-                if (it->second.owner == client.socket) it = commands_.erase(it);
-                else ++it;
             purgeClientQueue(client.socket);
             reply("OK RELEASE");
         }

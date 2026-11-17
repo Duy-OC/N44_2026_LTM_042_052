@@ -189,7 +189,6 @@ public:
                             client.textMode = true;
                             if (byte == '\n')
                             {
-                                if (!client.input.empty() && client.input.back() == '\r') client.input.pop_back();
                                 onText(client, client.input);
                                 client.input.clear();
                             }
