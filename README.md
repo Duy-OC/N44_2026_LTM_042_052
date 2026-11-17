@@ -37,7 +37,7 @@ Gateway học tuyến theo `sysid` và địa chỉ UDP nguồn từ heartbeat h
 
 - **Windows** — MinGW `g++` hỗ trợ C++17 trong `PATH`. Có thể dùng QGroundControl hoặc chương trình TCP client đi kèm.
 - **WSL2 Ubuntu** — PX4-Autopilot và Gazebo đã được thiết lập để chạy SITL.
-- **Python 3** — cần cho các script đo và kiểm thử. Cài thêm `pymavlink` để chạy các bài thử sử dụng UAV giả và `matplotlib` để vẽ biểu đồ.
+- **Python 3** — cần cho các script đo và kiểm thử. Cài thêm `pymavlink` để chạy các bài thử `tests/test_*.py`, UAV giả và script đo; cài `matplotlib` để vẽ biểu đồ. Toàn bộ bài thử `unittest` trong `tests/` cũng yêu cầu đã build các tệp `.exe` trong `bin\`.
 
 Môi trường ghi trong đợt đo gồm Windows 11 Pro build 26200, Intel Core i5-12450H, WSL2 Ubuntu 24.04 ở chế độ NAT, MinGW GCC 6.3.0, PX4 SITL 1.18.0 và Gazebo Sim 8.15.0 với mô hình x500. Xem [hồ sơ môi trường](docs/moi_truong_do_K.md).
 
@@ -55,6 +55,15 @@ Môi trường ghi trong đợt đo gồm Windows 11 Pro build 26200, Intel Core
 | [`tests/`](tests/) | Kiểm thử C++ và Python. |
 | [`build.bat`](build.bat), [`Makefile`](Makefile) | Lệnh build các chương trình Windows. |
 | `bin/` | Tệp thực thi tạo sau khi build. |
+
+### Tổng quan `scripts/`
+
+| Nhóm | Tệp | Mục đích |
+|---|---|---|
+| Điều khiển & giả lập | `control_client.py`, `simulate_px4.py`, `probe_px4.py`, `setup_px4_env.sh` | Client văn bản (`--log-file`), phát telemetry giả (`pymavlink`), probe luồng PX4, gợi ý IP WSL2. |
+| Chạy đo & kiểm chứng | `run_k_live.py`, `run_k6.py`, `run_case.py`, `measure_timeout_px4.py`, `check_gateway_functions.py` | Chạy các kịch bản đo K1–K8, đo ACK/retry K6, kiểm tra khóa/multi-client. |
+| Tổng hợp & biểu đồ | `analyze_markov_run.py`, `compare_markov_common.py`, `summarize_k0.py`, `summarize_manual.py`, `plot_k_results.py`, `plot_project_results.py` | Phân tích trace proxy/gateway, tổng hợp CSV và vẽ biểu đồ (`matplotlib`). |
+| Kiểm thử C++ | `run_test_stage1.bat`, `run_test_stage2.bat` | Biên dịch và chạy kiểm thử framing/CRC (Stage 1) và giải mã telemetry (Stage 2). |
 
 ## 5. Cài đặt và build
 
@@ -118,7 +127,7 @@ Ví dụ tạo mất theo cụm ở mức mục tiêu 5%. Proxy sử dụng cấ
 
 ### TCP client và QGroundControl
 
-Mở một hoặc nhiều terminal Windows để theo dõi cùng luồng MAVLink:
+Mở một hoặc nhiều terminal Windows để theo dõi cùng luồng MAVLink (`[host]` `[port]` tùy chọn, mặc định `127.0.0.1` `5760`):
 
 ```powershell
 .\bin\tcpclient.exe 127.0.0.1 5760
@@ -126,7 +135,7 @@ Mở một hoặc nhiều terminal Windows để theo dõi cùng luồng MAVLink
 
 Trong QGroundControl, tạo liên kết **TCP** đến `127.0.0.1:5760`. Khi kết nối hoạt động, gateway ghi UAV `ONLINE`, số khung nhận tăng và client cập nhật telemetry. Nếu gateway không nhận dữ liệu, kiểm tra địa chỉ đích trong `mavlink status`, tiến trình chiếm UDP `14550` và quyền nhận UDP của gateway trong Windows Firewall.
 
-Client văn bản chạy ở terminal riêng:
+Client văn bản chạy ở terminal riêng (`[host]` `[port]` mặc định `127.0.0.1` `5760`, hỗ trợ `--log-file <PATH>`):
 
 ```powershell
 python scripts/control_client.py 127.0.0.1 5760
@@ -169,10 +178,10 @@ Một số lỗi thường gặp gồm `ERR LOCKED` khi khóa thuộc phiên kh�
 | Timeout UAV | `3 s` kể từ khung hợp lệ gần nhất của nguồn đã học. |
 | Giới hạn TCP | Tối đa 10 client, hàng đợi 256 KiB mỗi client. Khi phân phối MAVLink nhị phân, gateway ngắt phiên nếu việc thêm khung vượt giới hạn. |
 | Hàng đợi UDP | Tối đa 512 khung. |
-| Đo tại gateway | `--measure-seconds` bật chế độ đo. Dùng `--scenario`, `--run-id` và `--output-dir` để đặt nhãn và nơi ghi kết quả. |
-| Cổng proxy | `--listen-port`, `--gateway-port` và `--gateway-source-port`. Nên ghi rõ cả ba để khớp với tuyến đã chọn. |
-| Markov tại proxy | `--urb` đặt tỷ phần trạng thái xấu mục tiêu. `--burst-packets` đặt độ dài trung bình trạng thái xấu theo khung. Chế độ theo thời gian dùng `--dur-s` và `--slot-ms`. |
-| Lỗi tại proxy | `--lossgood` và `--lossbad` đặt xác suất thả theo trạng thái. `--delay-bad-min-ms` và `--delay-bad-max-ms` đặt khoảng trễ. `--flip-probability` đặt xác suất lật bit. |
+| Đo tại gateway | `--measure-seconds <1..3600>` bật chế độ đo (mặc định `60` khi dùng). Dùng `--scenario` (mặc định `DEFAULT`), `--run-id` và `--output-dir` (mặc định `docs/ketqua`) để đặt nhãn và nơi ghi kết quả. |
+| Cổng & định danh proxy | `--listen-port` (mặc định `14551`), `--gateway-port` (mặc định `14550`) và `--gateway-source-port` (mặc định `14610`); ba cổng phải khác nhau và nên ghi rõ khi chạy tuyến đo chuẩn (`14550`/`14551`/`14610`). `--sysid` chọn UAV đích (`1..255`, mặc định `1`). |
+| Markov tại proxy | Chiều thuận: `--urb` (tỷ phần trạng thái xấu), `--burst-packets` (bật chế độ đếm theo gói), `--dur-s`, `--slot-ms`, `--lossgood`, `--lossbad`, `--seed`. Chiều ngược kế thừa chiều thuận (với `seed ^ 0x9e3779b9`) và có thể ghi đè bằng `--reverse-urb`, `--reverse-burst-packets`, `--reverse-dur-s`, `--reverse-slot-ms`, `--reverse-lossgood`, `--reverse-lossbad`, `--reverse-seed`. |
+| Lỗi & đo tại proxy | `--delay-bad-min-ms` và `--delay-bad-max-ms` (`0..10000` ms), `--flip-probability` (`0..1`). `--measure-seconds <1..3600>` bật ghi CSV theo `--scenario` (mặc định `UPSTREAM`), `--run-id` và `--output-dir`. |
 | Tái lập lượt đo | Lưu seed cùng cấu hình và cửa sổ đo. Seed giúp tái lập quyết định với cùng đầu vào và thứ tự xử lý. |
 
 ## 10. Kết quả đo
@@ -201,7 +210,7 @@ Chạy từ thư mục gốc sau khi build, với các cổng thử nghiệm cò
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
-Các ca kiểm thử bao gồm parser và CRC, giải mã telemetry, khóa điều khiển, giao tiếp nhị phân kiểu QGC và các chế độ đo qua proxy. Xem thêm [thư mục kiểm thử](tests/).
+Các ca kiểm thử `unittest` cần `bin\gateway.exe`, `bin\upstream_markov_proxy.exe` và thư viện Python `pymavlink`. Nội dung kiểm thử bao gồm parser và CRC, giải mã telemetry, khóa điều khiển, giao tiếp nhị phân kiểu QGC và các chế độ đo qua proxy. Xem chi tiết tại [hướng dẫn kiểm thử](tests/README.md).
 
 ## 12. Định dạng log
 
