@@ -51,16 +51,14 @@ Môi trường ghi trong đợt đo gồm Windows 11 Pro build 26200, Intel Core
 | [`src/common/`](src/common/) | Codec MAVLink, bộ đo QoS, bộ theo dõi số thứ tự và cấu hình. |
 | [`third_party/mavlink/`](third_party/mavlink/) | Header MAVLink dùng khi build. |
 | [`scripts/`](scripts/) | Điều khiển, chạy phép đo, tổng hợp dữ liệu và vẽ biểu đồ. |
-| [`docs/ketqua/`](docs/ketqua/) | CSV, nhật ký và biểu đồ thực nghiệm. |
+| `docs/ketqua/` | CSV, nhật ký và biểu đồ thực nghiệm (sinh ra cục bộ khi chạy đo; xem tổng hợp tại [`docs/tong_hop_qos_gateway.csv`](docs/tong_hop_qos_gateway.csv)). |
 | [`tests/`](tests/) | Kiểm thử C++ và Python. |
 | [`build.bat`](build.bat), [`Makefile`](Makefile) | Lệnh build các chương trình Windows. |
 | `bin/` | Tệp thực thi tạo sau khi build. |
 
 ## 5. Cài đặt và build
 
-Giải nén `projectltm.rar` và mở thư mục chứa `build.bat`.
-
-, chạy bằng PowerShell:
+Mở thư mục gốc dự án chứa `build.bat`, chạy bằng PowerShell:
 
 ```powershell
 g++ --version
@@ -254,4 +252,4 @@ Bản mã nguồn được cung cấp chưa kèm tệp giấy phép cho phần m
 - [PX4 User Guide — Simulation](https://docs.px4.io/v1.18/en/simulation/)
 - [Microsoft Learn — Windows Sockets 2](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-start-page-2)
 - [NTIA TM-23-565 — Relationships Between Gilbert–Elliott Burst Error Model Parameters and Error Statistics](https://its.ntia.gov/publications/download/TM-23-565.pdf)
-- [Quy trình thực nghiệm](docs/huong_dan_do_K0_K7.md) và [kết quả tổng hợp của dự án](docs/bao_cao_ket_qua_do_lai.md).
+- [Hồ sơ môi trường đo](docs/moi_truong_do_K.md) và [bảng tổng hợp QoS gateway](docs/tong_hop_qos_gateway.csv).
