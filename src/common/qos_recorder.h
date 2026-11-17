@@ -88,6 +88,8 @@ public:
                 ? std::to_string(stamp)
                 : runId;
 
+        ensureDirectoryTree(outputDirectory);
+
         const std::string prefix =
             outputDirectory + "/" +
             scenario + "_" +
@@ -510,6 +512,24 @@ private:
         unsigned long long offlineEvents = 0;
         double offlineSeconds = 0.0;
     };
+
+    static bool ensureDirectoryTree(const std::string &path)
+    {
+        if (path.empty()) return true;
+        std::string current;
+        for (std::size_t i = 0; i < path.size(); ++i)
+        {
+            const char ch = path[i];
+            current.push_back(ch);
+            if ((ch == '/' || ch == '\\') && current.size() > 1)
+            {
+                if (current.size() == 3 && current[1] == ':') continue;
+                CreateDirectoryA(current.c_str(), nullptr);
+            }
+        }
+        if (CreateDirectoryA(current.c_str(), nullptr) != 0) return true;
+        return GetLastError() == ERROR_ALREADY_EXISTS;
+    }
 
     static bool exists(const std::string &path)
     {
