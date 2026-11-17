@@ -49,14 +49,26 @@ public:
         return clients_.size();
     }
 
-    bool queue(SOCKET socket, const std::string &data)
+    bool queue(
+        SOCKET socket,
+        const std::string &data,
+        Statistics *stats = nullptr,
+        const CloseHandler &onClose = {})
     {
+        if (socket == INVALID_SOCKET) return false;
         for (auto &client : clients_)
-            if (client.socket == socket && client.pending.size() + data.size() <= Config::MAX_TCP_PENDING)
+        {
+            if (client.socket != socket) continue;
+            if (client.pending.size() + data.size() <= Config::MAX_TCP_PENDING)
             {
                 client.pending += data;
                 return true;
             }
+            if (stats) ++stats->slowClients;
+            std::cout << "Client qua cham\n";
+            disconnect(client, onClose ? onClose : CloseHandler([](SOCKET) {}));
+            return false;
+        }
         return false;
     }
 

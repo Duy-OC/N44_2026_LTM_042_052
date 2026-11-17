@@ -136,6 +136,7 @@ private:
 
     void purgeUavQueue(int sysid);
     void purgeClientQueue(SOCKET owner);
+    void queueClient(SOCKET socket, const std::string &data);
 
     SOCKET udp_ = INVALID_SOCKET;
     SOCKET listener_ = INVALID_SOCKET;
@@ -310,6 +311,14 @@ int Gateway::run()
     }
 }
 
+void Gateway::queueClient(SOCKET socket, const std::string &data)
+{
+    clients_.queue(socket, data, &stats_, [this](SOCKET owner)
+    {
+        purgeClientQueue(owner);
+    });
+}
+
 void Gateway::maintenance()
 {
     TimePoint now = Clock::now();
@@ -337,7 +346,7 @@ void Gateway::maintenance()
     {
         if (client.textMode && client.subscribeHz > 0 && now >= client.nextDetail)
         {
-            clients_.queue(client.socket, detail(now));
+            queueClient(client.socket, detail(now));
             client.nextDetail = now + std::chrono::milliseconds(1000 / client.subscribeHz);
         }
     });
@@ -348,14 +357,14 @@ void Gateway::maintenance()
         const Uav *uav = uavs_.get(command.sysid);
         if (!uav || !isOnline(*uav, now) || uav->generation != command.generation)
         {
-            clients_.queue(command.owner, "RESULT " + std::to_string(command.sysid) + " OFFLINE\n");
+            queueClient(command.owner, "RESULT " + std::to_string(command.sysid) + " OFFLINE\n");
             it = commands_.erase(it);
         }
         else if (elapsedSeconds(now, command.sentAt) >= 1.0)
         {
             if (command.attempts >= 3)
             {
-                clients_.queue(command.owner, "RESULT " + std::to_string(command.sysid) + " TIMEOUT\n");
+                queueClient(command.owner, "RESULT " + std::to_string(command.sysid) + " TIMEOUT\n");
                 it = commands_.erase(it);
             }
             else
@@ -457,7 +466,7 @@ void Gateway::handleText(Client &client, const std::string &line)
     input >> action;
     auto reply = [this, &client](const std::string &value)
     {
-        clients_.queue(client.socket, value + "\n");
+        queueClient(client.socket, value + "\n");
     };
 
     if (action == "GET_DETAIL")
@@ -470,7 +479,7 @@ void Gateway::handleText(Client &client, const std::string &line)
             else if (!uav || !isOnline(*uav, Clock::now())) reply("DETAIL NONE");
             else reply("DETAIL " + uav->telemetry.toJsonString(sysid, Clock::now()));
         }
-        else if (input.eof()) clients_.queue(client.socket, detail(Clock::now()));
+        else if (input.eof()) queueClient(client.socket, detail(Clock::now()));
         else reply("ERR USAGE GET_DETAIL [sysid]");
     }
     else if (action == "SUBSCRIBE")
@@ -983,7 +992,7 @@ void Gateway::receiveUavData()
                     pending->second.sentAt = Clock::now();
                 else
                 {
-                    clients_.queue(pending->second.owner,
+                    queueClient(pending->second.owner,
                         "RESULT " + std::to_string(message.sysid) + " " +
                         std::to_string(ack.command) + " " + std::to_string(ack.result) + "\n");
                     commands_.erase(pending);
