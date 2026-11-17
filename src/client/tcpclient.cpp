@@ -96,7 +96,17 @@ int main(int argc, char **argv)
     const char *host = "127.0.0.1";
 
     if (argc >= 2) host = argv[1];
-    if (argc >= 3) port = static_cast<unsigned short>(std::atoi(argv[2]));
+    if (argc >= 3)
+    {
+        char *end = nullptr;
+        long parsedPort = std::strtol(argv[2], &end, 10);
+        if (!end || end == argv[2] || *end != '\0' || parsedPort < 1 || parsedPort > 65535)
+        {
+            std::cerr << "Cong khong hop le: " << argv[2] << " (can 1..65535)\n";
+            return 1;
+        }
+        port = static_cast<unsigned short>(parsedPort);
+    }
 
     // 1. Khoi tao WinSock
     Network::Runtime winsock;
@@ -119,6 +129,12 @@ int main(int argc, char **argv)
     server.sin_family = AF_INET;
     server.sin_port = htons(port);
     server.sin_addr.s_addr = inet_addr(host);
+    if (server.sin_addr.s_addr == INADDR_NONE)
+    {
+        std::cerr << "Dia chi IP khong hop le: " << host << '\n';
+        Network::closeSocket(clientSocket);
+        return 1;
+    }
 
     std::cout << "[TCP Client] Dang ket noi toi Gateway " << host << ":" << port << "...\n";
 
@@ -155,7 +171,6 @@ int main(int argc, char **argv)
     unsigned long long previousFrames = 0;
     unsigned long long previousBytes = 0;
 
-    TimePoint lastReport = Clock::now();
     TimePoint lastDashboard = Clock::now();
 
     char buffer[4096];
