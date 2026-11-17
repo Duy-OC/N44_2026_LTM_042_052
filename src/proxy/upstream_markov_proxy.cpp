@@ -361,29 +361,33 @@ private:
         if (item.delaySetMs > 0 && item.inWindow)
         {
             ++delayedFrames_;
-            delayFile_ << msSinceStart(item.receivedAt) << ',' << msSinceStart(now)
-                       << ',' << item.delaySetMs << ','
-                       << 1000.0 * elapsedSeconds(now, item.receivedAt) << ','
-                       << static_cast<int>(item.message.seq) << ','
-                       << item.message.msgid << '\n';
+            if (options_.measure)
+                delayFile_ << msSinceStart(item.receivedAt) << ',' << msSinceStart(now)
+                           << ',' << item.delaySetMs << ','
+                           << 1000.0 * elapsedSeconds(now, item.receivedAt) << ','
+                           << static_cast<int>(item.message.seq) << ','
+                           << item.message.msgid << '\n';
         }
-        if (item.flipped)
+        if (options_.measure && item.flipped)
             faultFile_ << elapsedSeconds(item.receivedAt, firstFrame_) << ','
                        << static_cast<int>(item.message.sysid) << ','
                        << static_cast<int>(item.message.compid) << ','
                        << static_cast<int>(item.message.seq) << ','
                        << item.message.msgid << ",1,1\n";
-        const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        postTraceFile_ << epochMs << ','
-                       << static_cast<unsigned int>(item.message.sysid) << ','
-                       << static_cast<unsigned int>(item.message.compid) << ','
-                       << static_cast<unsigned int>(item.message.seq) << ','
-                       << item.message.msgid << ','
-                       << static_cast<unsigned int>(item.message.len) << ','
-                       << item.message.checksum << ','
-                       << static_cast<unsigned int>(item.message.magic) << ','
-                       << (item.flipped ? 1 : 0) << '\n';
+        if (options_.measure)
+        {
+            const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            postTraceFile_ << epochMs << ','
+                           << static_cast<unsigned int>(item.message.sysid) << ','
+                           << static_cast<unsigned int>(item.message.compid) << ','
+                           << static_cast<unsigned int>(item.message.seq) << ','
+                           << item.message.msgid << ','
+                           << static_cast<unsigned int>(item.message.len) << ','
+                           << item.message.checksum << ','
+                           << static_cast<unsigned int>(item.message.magic) << ','
+                           << (item.flipped ? 1 : 0) << '\n';
+        }
     }
 
     void flushDelayed(TimePoint now)
@@ -491,16 +495,19 @@ private:
             const bool inWindow = !options_.measure || preQos_.inMeasurementWindow(now);
             const bool keep = channel_->keepFrame(msSinceStart(now));
             const bool bad = channel_->isBad();
-            const auto decisionEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            decisionFile_ << decisionEpochMs << ',' << msSinceStart(now) << ','
-                          << (inWindow ? 1 : 0)
-                          << ',' << static_cast<int>(message.sysid)
-                          << ',' << static_cast<int>(message.compid)
-                          << ',' << static_cast<int>(message.seq)
-                          << ',' << message.msgid << ','
-                          << (bad ? 'B' : 'G') << ','
-                          << (keep ? "KEEP" : "DROP") << '\n';
+            if (options_.measure)
+            {
+                const auto decisionEpochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                decisionFile_ << decisionEpochMs << ',' << msSinceStart(now) << ','
+                              << (inWindow ? 1 : 0)
+                              << ',' << static_cast<int>(message.sysid)
+                              << ',' << static_cast<int>(message.compid)
+                              << ',' << static_cast<int>(message.seq)
+                              << ',' << message.msgid << ','
+                              << (bad ? 'B' : 'G') << ','
+                              << (keep ? "KEEP" : "DROP") << '\n';
+            }
             if (inWindow)
             {
                 ++preFrames_;
@@ -596,14 +603,17 @@ private:
             }
             break;
         }
-        const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        reverseTraceFile_ << epochMs << ',' << options_.runId << ','
-                          << options_.sysid << ',' << n << ','
-                          << msgid << ',' << command << ','
-                          << (bad ? 'B' : 'G') << ','
-                          << (keep ? "KEEP" : "DROP") << '\n';
-        reverseTraceFile_.flush();
+        if (options_.measure)
+        {
+            const auto epochMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            reverseTraceFile_ << epochMs << ',' << options_.runId << ','
+                              << options_.sysid << ',' << n << ','
+                              << msgid << ',' << command << ','
+                              << (bad ? 'B' : 'G') << ','
+                              << (keep ? "KEEP" : "DROP") << '\n';
+            reverseTraceFile_.flush();
+        }
         if (inWindow) ++reverseMeasuredRx_;
         if (!keep)
         {
