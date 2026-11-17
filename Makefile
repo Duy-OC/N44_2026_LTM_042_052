@@ -8,7 +8,7 @@ TARGETS = $(BIN_DIR)/gateway.exe $(BIN_DIR)/tcpclient.exe $(BIN_DIR)/upstream_ma
 all: $(BIN_DIR) $(TARGETS)
 
 $(BIN_DIR):
-	mkdir $(BIN_DIR)
+	mkdir -p $(BIN_DIR)
 
 $(BIN_DIR)/gateway.exe: src/gateway/gateway.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDFLAGS)

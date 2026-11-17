@@ -9,7 +9,7 @@ if not exist bin mkdir bin
 if not exist docs\ketqua mkdir docs\ketqua
 
 echo [1/2] Bien dich chuong trinh test tests/test_stage1_framing.cpp...
-g++ -std=c++11 -O2 -Isrc/common -Isrc/gateway -Ithird_party -o bin\test_stage1_framing.exe tests\test_stage1_framing.cpp -lws2_32
+g++ -std=c++17 -O2 -Isrc/common -Isrc/gateway -Ithird_party -o bin\test_stage1_framing.exe tests\test_stage1_framing.cpp -lws2_32
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Bien dich test_stage1_framing that bai!
     exit /b 1

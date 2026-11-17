@@ -56,8 +56,13 @@ def main():
                 if line.upper() in ("QUIT", "EXIT"):
                     break
                 if line:
+                    try:
+                        payload = (line + "\n").encode("ascii")
+                    except UnicodeEncodeError:
+                        emit(f"{stamp()} ERR ASCII_ONLY")
+                        continue
                     emit(f"{stamp()} TX {line}")
-                    conn.sendall((line + "\n").encode("ascii"))
+                    conn.sendall(payload)
         except (EOFError, KeyboardInterrupt, OSError):
             pass
         finally:
