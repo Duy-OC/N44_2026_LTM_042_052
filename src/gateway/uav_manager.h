@@ -316,13 +316,6 @@ public:
 
         switch (message.msgid)
         {
-            case MAVLINK_MSG_ID_HEARTBEAT:
-            {
-                mavlink_heartbeat_t hb{};
-                mavlink_msg_heartbeat_decode(&message, &hb);
-                decodeHeartbeat(tel, hb, now);
-                break;
-            }
             case MAVLINK_MSG_ID_SYS_STATUS:
             {
                 mavlink_sys_status_t sysStatus{};
