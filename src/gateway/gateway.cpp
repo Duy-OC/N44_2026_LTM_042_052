@@ -4,7 +4,7 @@
 #include "uav_manager.h"
 #include "client_manager.h"
 #include "statistics.h"
-#include "qos.h"
+#include "qos_recorder.h"
 
 #include <windows.h>
 #include <deque>

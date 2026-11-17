@@ -1,6 +1,6 @@
 #include "network.h"
 #include "mavlink_codec.h"
-#include "qos.h"
+#include "qos_recorder.h"
 #include "emulator.h"
 #include "time_utils.h"
 #include <windows.h>
