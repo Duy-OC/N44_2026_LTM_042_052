@@ -165,6 +165,9 @@ public:
                     for (int i = 0; i < n; ++i)
                     {
                         const unsigned char byte = static_cast<unsigned char>(buffer[i]);
+                        if (!client.rawMode && !client.textMode &&
+                            (byte == ' ' || byte == '\t' || byte == '\r' || byte == '\n'))
+                            continue;
                         if (!client.rawMode && client.input.empty() &&
                             (byte == MAVLINK_STX || byte == MAVLINK_STX_MAVLINK1))
                             client.rawMode = true;
@@ -190,10 +193,6 @@ public:
                         client.rawMode = true;
                         uint8_t status = client.parser.feed(
                             byte);
-                        if (status == MAVLINK_FRAMING_OK ||
-                            status == MAVLINK_FRAMING_BAD_CRC ||
-                            status == MAVLINK_FRAMING_BAD_SIGNATURE)
-                            client.rawMode = false;
 
                         if (!stats.acceptParse(status, false))
                         {
