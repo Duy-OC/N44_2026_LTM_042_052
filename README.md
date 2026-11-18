@@ -65,6 +65,10 @@ Tạo 3 tệp trong `bin\`: `gateway.exe`, `tcpclient.exe`, `upstream_markov_pro
 
 **Kết nối client / kiểm thử:**
 
+Các lệnh chạy bình thường ở trên không tạo file kết quả CSV/log. Chỉ bật ghi
+kết quả khi thêm `--measure-seconds <số giây>` hoặc chạy script đo trong `scripts/`.
+Kết quả đã đo được giữ tại `docs/ketqua_lan2/`.
+
 ```powershell
 .\bin\tcpclient.exe 127.0.0.1 5760
 python scripts/control_client.py 127.0.0.1 5760
