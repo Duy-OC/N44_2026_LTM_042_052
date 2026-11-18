@@ -528,7 +528,9 @@ private:
             }
         }
         if (CreateDirectoryA(current.c_str(), nullptr) != 0) return true;
-        return GetLastError() == ERROR_ALREADY_EXISTS;
+        const DWORD attributes = GetFileAttributesA(current.c_str());
+        return attributes != INVALID_FILE_ATTRIBUTES &&
+               (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     }
 
     static bool exists(const std::string &path)
